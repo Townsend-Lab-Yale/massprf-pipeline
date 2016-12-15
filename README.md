@@ -4,9 +4,9 @@ high throughput pipeline for genome wide MASSPRF analysis
 ## dependencies:
 ### in general, use conda http://conda.pydata.org/docs/
 ### particular packages:
-  bio
-  numpy
-  psutil
+* bio
+* numpy
+* psutil
 more to come
 
 
