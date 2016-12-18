@@ -50,17 +50,23 @@ class MUSCLE (object):
 	
 	def trim(self, alignment):
 		inserts = []
+		codons = []
 		# this could probably be converted to np.arrays and use logical indexing to delete gaps for (?) more efficiency
 		for i in range(len(alignment)): # go through each sequence in the alignment
-			inserts.append([c for c, x in enumerate(list(alignment[i].seq)) if x =='-']) # check the sequence for gaps ('-'), append a list of the indices of gaps for each alignment
+			sequence = str(alignment[i].seq)
+			codons.append([sequence[n:n+3] for n in range (0, len(sequence), 3)])
+			inserts.append([c for c, x in enumerate(codons[i]) if '-' in x])
+			 # check the sequence for gaps ('-'), append a list of the indices of gaps for each alignment
 		inserts=set([item for sublist in inserts for item in sublist]) # iterate through the nested list and condense into a set (removes duplicates)
 		inserts = list(inserts) #flip it back to a list for sorting and indexing
-		for i in range(len(alignment)): # go back through each alignment
-			record = list(alignment[i].seq) # set to current alignment
+		for i in range(len(codons)): # go back through each alignment
+			record = codons[i] # set to current alignment
 			for z in sorted(inserts,reverse=True): # index of gaps, in reverse so that the indices do not change
 				del record[z]
 
-			alignment[i].seq = ''.join(record)
+			codons[i] = ''.join(record)
+			alignment[i].seq=codons[i]
+			
 		return alignment
 
 def script(args):
@@ -90,7 +96,7 @@ def script(args):
 	slicedaligned = muscle.trim(aligned)
 	slicedaligned = {s.description:s.seq for s in slicedaligned}
 
-	for f in seqParser.keys(): 
+	for f in seqParser.keys(): 15
 		#match aligned/trimmed sequences back to the original file they came from, write to a new file of similar name
 		tempseqs = []
 		for record in seqParser[f]:
