@@ -56,5 +56,5 @@ if __name__=="__main__":
 		for line in lines:
 			splitline = line.split(',')
 			if int(splitline[1]) <= 600:
-				jobsfile.write(splitline[4])
+				jobsfile.write(splitline[4]+'\n')
 			
