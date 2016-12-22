@@ -9,6 +9,7 @@ def is_valid_file(parser, arg, permission):
     	raise IOError("The file %s does not exist!" % arg)
     else:    
 		return open(arg, permission)  # return an open file handle
+
 def write_error(file, string):
 	errstring = ''
 	try:
@@ -18,7 +19,7 @@ def write_error(file, string):
 		errstring = "Could not open", file , '\n', 'Attempted to write ', string
 		f = open("logerror.txt",'a')
 		f.write(errstring)
-		f.close()
+	f.close()
 
 class CONSENSUS(object):
 
