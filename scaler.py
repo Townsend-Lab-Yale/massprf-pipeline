@@ -16,7 +16,7 @@ def write_error(file, string):
 		f = is_valid_file(False, file, 'a')
 		f.write(string)
 	except:
-		errstring = "Could not open", file , '\n', 'Attempted to write ', string
+		errstring = "Could not open" + str(file) + '\n Attempted to write '+ str(string)
 		f = open("logerror.txt",'a')
 		f.write(errstring)
 	f.close()
@@ -25,16 +25,21 @@ class CONSENSUS(object):
 
 	def __init__(self, f):
 		lines = [line for line in f.read().splitlines() if line]
-		if "Can't" in lines[0]:
-			raise ValueError("file error due to silent clustering")
-		if "Error" in lines[0]:
-			raise ValueError("error in MASSPRF_preprocess input parameters")
-		if "MAC-PRF" not in lines[0]:
-			raise ValueError("Not a massprf file")
-		if "Mission accomplished" not in lines[-1]:
-			raise ValueError("file did not pass preprocessing")
+		self.genename = f.name.split('/')[-1].split('_')[0]	
 
-		self._genename = ''
+		if "Can't" in lines[0]:
+			write_error("output/scalingerrors.txt",self.genename +" error due to silent clustering")
+			raise ValueError
+		if "Error" in lines[0]:
+			write_error("output/scalingerrors.txt",self.genename + "error in MASSPRF_preprocess input parameters")
+			raise ValueError
+		if "MAC-PRF" not in lines[0]:
+			write_error("output/scalingerrors.txt",self.genename + "Not a massprf file")
+			raise ValueError
+		if "Mission accomplished" not in lines[-1]:
+			write_error("output/scalingerrors.txt", self.genename +" did not pass preprocessing")
+			raise ValueError
+
 		self._ogpol = ''
 		self._ogdiv = ''
 		self._scalex = 1

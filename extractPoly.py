@@ -1,3 +1,6 @@
+# get pyVCF
+
+from abc import ABCMeta, abstractmethod
 import argparse
 import re
 import logging
@@ -85,7 +88,39 @@ def gnCheck(gn,seq):
 		else:
 			return False
 
+class Polymorphism (object):
+	'''Parent class for polymorphism data
 
+	attributes:
+		pmFile: list of file contents
+		coordinates: list of coordinates of SNPs
+		strains: list of strains
+		alleles: coordinates:strains:allele
+	'''
+	__metaclass__ = ABCMeta
+	def __init__ (self, file):
+		with open(file) as f:
+			self.pmFile  = list(f)
+
+	@abstractmethod
+	def file_type(self):
+		pass
+
+class VCF (Polymorphism):
+	'''Variant calling format
+	inherits class Polymorphism
+
+	attributes:
+		pmFile: list of file contents
+	'''
+	def __init__(self,file):
+		Polymorphism.__init__(self,file)
+
+	def file_type(self):
+		return 'VCF'
+
+class SNP (Polymorphism)
+	pass
 class CDS (object):
 	def __init__(self, name, contig, strand):
 		self.name = name
