@@ -3,15 +3,25 @@ import gffutils
 import vcf
 from Bio import SeqIO
 from pathlib import Path
+import itertools
+'''
 
-'''1) implement full gff3 initialization of Gene class
+top priority: unify indexing systems to linear sequences
+1) implement full gff3 initialization of Genome class
 2) implement FASTA coordinate/chromosome referencing to create CDS
 5) implement genome wide composite class of genes
 7) think about class hierarchy and inheritance
 8) figure out how to make the adaptors & builders singletons
 9) figure out an optimal time to export files so variants do not have to be reloaded continuously
 10) make variants class iterable
+11) add scaling algorithm
+12) add subprocess spawning for MUSCLE, massprf
+13) implement reverse complementation
+14) implement codon scanning
 '''
+
+complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
+
 def allele(gt):
 	'''OR gate heterozygous/homozygous dominant'''
 	return gt in ['0/1','1/1']
@@ -74,42 +84,26 @@ class PyVCFAdaptor(object):
 			raise IOError("Invalid filename supplied for VCF")
 		else:
 			self.filename = variants
-			self.vcf = vcf.Reader(open(variants))
-
-		'''initialize the first row of the variants array - figure out the best way to do this initialization w/in one loop through entire file'''
-		calls = []		
-		firstrecord = next(self.vcf)
-		strains = [s.sample for s in firstrecord.samples]
-		variants = Variants(strains)
-		if firstrecord.is_snp:
-			coordinate = Coordinate(firstrecord.CHROM, firstrecord.POS)
-			for strain in variants.strains:
-				calls.append(allele(firstrecord.genotype(strain)['GT']))
-		
-			ref = firstrecord.REF
-			alt = firstrecord.ALT[0] #What happens if there is more than one ALT? SNP reading breaks
-
-			calls = [alt if gt else ref for gt in calls]
-
-			for a, s in zip(calls, variants.strains):
-				variants.addVariant(Variant(coordinate,s,a))
-		
-		# repeat the above for the rest of the variants
-		for record in self.vcf:
-			if record.is_snp:
+			self.file = open(self.filename)
+			self.vcf = vcf.Reader(self.file)
+			
+			strains = self.vcf.samples
+			variants = Variants(strains)
+			for record in self.vcf:
 				calls = []
-				coordinate = Coordinate(record.CHROM, record.POS)
-				for strain in variants.strains:
-					calls.append(allele(record.genotype(strain)['GT']))
+				if record.is_snp:
+					coordinate = Coordinate(record.CHROM, record.POS)
+					for strain in variants.strains:
+						calls.append(allele(record.genotype(strain)['GT']))
 
-				ref = record.REF
-				alt = record.ALT[0] #See above - SNP reading breaks >1 alternate allele
+					ref = record.REF
+					alt = record.ALT[0] #See above - SNP reading breaks >1 alternate allele
 
-				calls = [alt if gt else ref for gt in calls]
+					alleles = [alt if gt else ref for gt in calls]
 
-				for a, s in zip(calls, variants.strains):
-					variants.addVariant(Variant(coordinate, s, a))
-
+					for a, s in zip(alleles, variants.strains):
+						variants.addVariant(Variant(coordinate, s, a))
+			self.file.close()
 		return variants
 
 class GenomeAdaptorBuilder(object):
@@ -128,21 +122,9 @@ class GenomeAdaptorBuilder(object):
 			#add new formats for parsing here
 			pass
 		else:
+			pass
 			#default to FASTA format for genome
-			return Genome(species, strain, SeqIO.to_dict(SeqIO.parse(reference)), variants)
 
-class Coordinate(object):
-		def __init__(self, chromosome, start, end = False):
-			if not chromosome:
-				return AttributeError("No chromosome supplied for coordinate")
-			if not start:
-				return AttributeError("No start position supplied for coordinate")
-			self.chromosome = chromosome
-			self.start = start
-			if not end:
-				self.end = start
-			else:
-				self.end = end
 
 class Genome(object):
 	''' in truth this should be a polymorphic class that can either be the fasta sequence or can be gff based.  the final output should combine both, and contain a list of Gene objects'''
@@ -153,31 +135,106 @@ class Genome(object):
 		self.reference = reference
 		self.species = species
 		self.strain = strain
+		
+	def __repr__(self):
+		return repr(species, strain)
 
-		self.chromosomes = len(reference)
 class Variants(object):
-	'''figure out how to cause this class to redirect instantiation'''
+	'''Variants, a composite class of Variant leafs
+		attributes:
+			strains: the strains that have been called
+			locations: the Coordinate locations of each variant
+			_snps_by_loc: private dictionary of dict[Coordinate] : [Variant,Variant,Variant]
+			_snps_by_strain: private dictionary of dict[strain] : dict[chromosome]: [Variant, Variant, Variant]
+		methods:
+			initialization: provide strains or raise exception;
+				initialize all attributes to empty
+			addVariant: Given a variant of type Variant, 
+				1) add its coordinate to self.locations
+				2) add its coordinate to the keys of self._snps_by_loc
+				3) append variants to that list
+				4) append variants to _snps_by_strain[variant.strain]
+			of_strain: 
+				arguments: string(strain), string(chromosome)
+				returns list of Variants of strain
+			on_chromosome:
+				returns hits, dict[hits] of variants on a chromosome
+			in_range:
+				returns variants on a chromosome within a range
+
+	'''
 	def __init__(self, strains):
+		if not strains:
+			raise AttributeError("No strains provided")
 		self.strains = strains
 		self.locations = []
-		self.snps = {}
+		self._snps_by_loc = {}
+		self._snps_by_strain = {strain:[] for strain in self.strains}
 
 	def addVariant(self, variant):
 		if variant.coordinate not in self.locations:
 			self.locations.append(variant.coordinate)
-		if not self.snps[variant.coordinate]:
-			self.snps[variant.coordinate]=[]
-		self.snps[variant.coordinate].append(variant.call)
+		if variant.coordinate not in self._snps_by_loc.keys():
+			self._snps_by_loc[variant.coordinate]=[]
+		self._snps_by_loc[variant.coordinate].append(variant)
+		self._snps_by_strain[variant.strain].append(variant)
 
+	def of_strain(self, strain, chromosome = False):
+		if strain not in self.strains:
+			raise ValueError("strain not in Variants")
+		else:
+			if chromosome:
+				return filter(lambda l: l.chromosome == str(chromosome), self._snps_by_strain[strain])
+			else:
+				return self._snps_by_strain[strain]
+
+	def on_chromosome(self, chromosome):
+		hits = filter(lambda l: l.chromosome == str(chromosome), self.locations)
+		variants = {}
+		for n in hits:
+			variants[n] = self._snps_by_loc[n]
+		return (hits, variants)
+
+	def in_range(self, chromosome, x1,x2):
+		if x2 <= x1:
+			x2, x1 = x1, x2
+		hits, variants = self.on_chromosome(chromosome)
+		in_range = filter(lambda x: x1 <= x.start <= x2, hits)
+
+		return (list(in_range), {x:variants[x] for x in in_range})
 		
 class Variant(object):
 	def __init__(self, coordinate, strain, call):
-		if not strains:
+		if not strain:
 			raise AttributeError("no strains supplied to variants")
-		
+		if not isinstance(coordinate, Coordinate):
+			raise AttributeError("invalid coordinate supplied")
+
 		self.coordinate = coordinate
-		self.strains = strains
+		self.strain = strain
 		self.gt = call
+
+	def __repr__(self):
+		return repr((self.strain, self.coordinate, self.gt))
+
+class Coordinate(object):
+	'''Coordinate leaf
+	chromosome is stored as a string for now to facilitate cases where the chromosome is oddly named, such as "supercont12.1"
+	'''
+	def __init__(self, chromosome, start, stop = False):
+		if not chromosome:
+			return AttributeError("No chromosome supplied for coordinate")
+		if not start:
+			return AttributeError("No start position supplied for coordinate")
+		self.chromosome = chromosome
+		self.start = int(start)
+		if not stop:
+			self.stop = start
+		else:
+			self.stop = stop
+	def __repr__(self):
+		return repr((self.chromosome, self.start))
+
 class Gene(object):
 	def __init__(self, coordinates, strand):
 		pass
@@ -206,11 +263,11 @@ class Gene(object):
 	#implement CDS coordinate generator
 '''
 
-filename = '../ricemassprf/Oryza_sativa.IRGSP-1.0.24.gtf.mRNA.clean.gff3'
-featuredb = '../ricemassprf/ricefeatureDB'
+#filename = '../ricemassprf/Oryza_sativa.IRGSP-1.0.24.gtf.mRNA.clean.gff3'
+#featuredb = '../ricemassprf/ricefeatureDB'
 
-kwargs = {"gff3":filename, "db": featuredb}
+#kwargs = {"gff3":filename, "db": featuredb}
 
-x = CDSAdaptorBuilder("gff3",**kwargs)
-print(type(x))
+#x = CDSAdaptorBuilder("gff3",**kwargs)
+#print(type(x))
 
