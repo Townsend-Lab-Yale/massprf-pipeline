@@ -1,9 +1,10 @@
 import pprint
 import gffutils
 import vcf
-from Bio import SeqIO
+from Bio import SeqIO, Sequence
 from pathlib import Path
 import itertools
+import csv
 '''
 
 top priority: unify indexing systems to linear sequences
@@ -25,6 +26,23 @@ complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
 def allele(gt):
 	'''OR gate heterozygous/homozygous dominant'''
 	return gt in ['0/1','1/1']
+class TwoWayDict(dict):
+	'''TwoWayDict borrowed from http://stackoverflow.com/questions/1456373/two-way-reverse-map
+	This mapping allows bidirectional dictionary type. used by homology map'''
+	def __setitem__(self, key, value):
+		if key in self:
+			del self[key]
+		if value in self:
+			del self[value]
+		dict.__setitem__(self, key, value)
+		dict.__setitem__(self, value, key)
+
+	def __delitem__(self, key):
+		dict.__delitem__(self, self[key])
+		dict.__delitem__(self, key)
+
+	def __len__(self):
+		return dict.__len__(self) // 2
 
 class CDSAdaptorBuilder(object):
 	'''CDSAdaptorBuilderis a factory for coding sequence adaptors classes
@@ -109,7 +127,7 @@ class PyVCFAdaptor(object):
 class GenomeAdaptorBuilder(object):
 	'''similar to other AdaptorBuilders, this one builds genome adaptors based on passed formatting
 	add support **kwargs to add variants'''
-	def __new__(self, frmt, species, strain, reference, variants = None, **kwargs):
+	def __new__(self, reference, species, frmt = "FASTA", variants = None, **kwargs):
 		if not Path(reference).is_file():
 			raise AttributeError("no valid reference genome supplied")
 		if not species:
@@ -121,23 +139,78 @@ class GenomeAdaptorBuilder(object):
 		if frmt == 'placeholder':
 			#add new formats for parsing here
 			pass
+		elif frmt == "FASTA":
+			#default to FASTA format for genome
+			return FastaGenomeAdaptor(reference, species, variants)
 		else:
 			pass
-			#default to FASTA format for genome
+class HomologAdaptorBuilder(object);
+	'''Adapts input homolog formats to HomologAdaptor'''
+	def __new__(self, homologyfile, frmt = "CSVa"):
+		if not Path(homologyfile).is_file():
+			raise AttributeError("No valid homology file specified")
+		if frmt == "CSVa":
+			#this file type is useful when you have two distinct divergent species with a CSV file mapping of the homologs
+			return CSVaHomologs(homologyfile)
+		elif frmt == "CSVb":
+			return CSVbHomologs(homologyfile)
+class CSVHomologs(object):
+	def __init__(self, homologyfile):
+		self.csvfilename = homologyfile
+		self.csvfilehandle = open(self.csvfilename)
+		self.reader = csv.reader(csvfilehandle)
+	def close(self):
+		self.csvfilehandle.close()
+class CSVaHomologs(CSVHomologs):
+	'''accepts CSV homology files where row = homolog, column = species'''
+	def __init__(self):
+		pass
+class CSVbHomologs(CSVHomologs):
+	'''this file format has two groupings of species/strains, and the species are using the same reference genome'''
+	def __init__(self):
+		pass
 
+class HomologyMap(object):
+	def __init__(self, species, homologs):
+		pass
+
+class FastaGenomeAdaptor(object):
+	'''FastaGenomeAdaptor adapts biopython SeqIO genome into the genome class
+	"species" here is a generic term, eg rice, banana, etc, that is useful for bluntly differentiating objects of type genome
+	'''
+	def __new__(self, reference, species, variants = None):
+		#GenomeAdaptorBuilder already did the type checking of reference to insure it is a filetype
+		self.reference_filename = reference
+		self.reference_file = open(reference)
+
+		#if variants are passed, we are going to build a bunch of new genome objects and return the genomes as a list
+		#the genomes should build & insert their variants themselves. 
 
 class Genome(object):
 	''' in truth this should be a polymorphic class that can either be the fasta sequence or can be gff based.  the final output should combine both, and contain a list of Gene objects'''
-	def __init__(self, species, strain, reference, vcf = None):
-		if not bool(reference):
-			raise AttributeError("Error creating genome; valid file but empty dictionary")
+	def __init__(self, species, strain, reference):
 
 		self.reference = reference
 		self.species = species
 		self.strain = strain
-		
+
 	def __repr__(self):
 		return repr(species, strain)
+class Features(Genome);
+	''' subclass of Genome
+		features within a genome
+	'''
+	pass
+class GenomeSequence(Genome):
+	'''subclass of Genome
+		genome w/ reference sequence'''
+	pass
+
+class Chromosome(Bio.Seq.Seq):
+	pass
+
+class CodingSequence(Bio.Seq.Seq):
+	pass
 
 class Variants(object):
 	'''Variants, a composite class of Variant leafs
@@ -204,7 +277,7 @@ class Variants(object):
 		return (list(in_range), {x:variants[x] for x in in_range})
 		
 class Variant(object):
-	def __init__(self, coordinate, strain, call):
+	def __init__(self, coordinate, strain, gt):
 		if not strain:
 			raise AttributeError("no strains supplied to variants")
 		if not isinstance(coordinate, Coordinate):
@@ -212,7 +285,7 @@ class Variant(object):
 
 		self.coordinate = coordinate
 		self.strain = strain
-		self.gt = call
+		self.gt = gt
 
 	def __repr__(self):
 		return repr((self.strain, self.coordinate, self.gt))
