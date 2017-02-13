@@ -1,4 +1,3 @@
-import pprint
 import gffutils
 import vcf
 import subprocess
@@ -488,12 +487,10 @@ class GffUtilAdaptor(object):
         self.dbname = ''
         self.gff3 = ''
         if 'gff3' in kwargs:
-            print(kwargs['gff3'])
             self.gff3 = Path(kwargs['gff3'])
             if not 'db' in kwargs:
                 self.dbname = Path(str(kwargs['gff3']) + 'db')
         if 'db' in kwargs:
-            print(kwargs['db'])
             if Path(kwargs['db']).is_file():
                 self.dbname = Path(kwargs['db'])
 
@@ -510,7 +507,6 @@ class GffUtilAdaptor(object):
         if not isinstance(feature, gffutils.feature.Feature):
             raise AttributeError("passed feature is not of type gffutils.feature.Feature")
         coordinates = list(map(lambda x: Coordinate(int(x.chrom), x.start-1, x.end), self.db.children(feature, featuretype = 'CDS', order_by = 'start')))
-        print(coordinates)
         name = feature.attributes['Name'][0]
         gene_id = feature.attributes['ID'][0]
         strand = feature.strand
