@@ -8,6 +8,8 @@ from Bio.Alphabet import generic_dna
 from pathlib import Path
 import itertools
 import csv
+
+
 '''
 
 top priority: unify indexing systems to linear sequences
@@ -176,7 +178,6 @@ class CodingSequence(object):
     def __init__(self, reference, name, coordinates, strand, homolog = None, gene_id = None):
         self.reference = reference
         self.species = reference.species
-        self.strain = reference.strain
         self.genename = name
         self.coordinates = coordinates
         self.chromosome = coordinates[0].chromosome
@@ -192,15 +193,23 @@ class CodingSequence(object):
         return repr(str(self))
 
     def __str__(self):
-        return str(self.strain) + ' ' + str(self.genename)
+        return str(self.species) + ' ' + str(self.genename)
 
     def __len__(self):
         return reduce(lambda x, y: x+y, map(lambda x: len(x), self.coordinates))
 
-    def getSequence(self):
-        pass
+    def getSequence(self, strain):
+        curstrain = self.reference.substrains[strain]
+        chromosome = curstrain.chromosomes[self.chromosome]
+        sequence = Seq(''.join([chromosome[coordinate.pos[0]:coordinate.pos[1]] for coordinate in self.coordinates]),generic_dna)
+        if self.strand is '-':
+            return sequence.reverse_complement()
+        else:
+            return str(sequence)
 
-class Variants(object):
+
+
+class Variants(object):s
     '''Variants, a composite class of Variant leafs
         attributes:
             strains: the strains that have been called
@@ -562,7 +571,7 @@ class MASSPRF_Queuer(object):
     Given a list of preprocessed & scaled MASSPRF output files, export a text file with corresponding MASSPRF commands for queueing system
     '''
     pass
-
+    
 class DirectoryTree(object):
     """docstring for DirectoryTree"""
     def __init__(self, rootdir):
