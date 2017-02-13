@@ -26,7 +26,6 @@ top priority: unify indexing systems to linear sequences
 '''
 
 '''constants definitions'''
-complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
 
 '''tool functions'''
 
