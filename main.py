@@ -8,21 +8,29 @@ from Bio.Alphabet import generic_dna
 from pathlib import Path
 import itertools
 import csv
-
+import logging
 
 '''
+fix this test output from createCodingAnnotation:
+suspect it has something to do with  GFF3 annotations that are reversed so that end < start
+Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+  File "/Users/jaystanley/Documents/School/Grad/townsend/massprf-pipeline/main.py", line 522, in createCodingAnnotation
+    cds = CodingAnnotation(reference, name, coordinates, strand, gene_id = gene_id)
+  File "/Users/jaystanley/Documents/School/Grad/townsend/massprf-pipeline/main.py", line 210, in __init__
+    self.length = len(self)
+  File "/Users/jaystanley/Documents/School/Grad/townsend/massprf-pipeline/main.py", line 219, in __len__
+    return reduce(lambda x, y: x+y, map(lambda x: len(x), self.coordinates))
+  File "/Users/jaystanley/Documents/School/Grad/townsend/massprf-pipeline/main.py", line 219, in <lambda>
+    return reduce(lambda x, y: x+y, map(lambda x: len(x), self.coordinates))
+ValueError: __len__() should return >= 0
 
-top priority: unify indexing systems to linear sequences
-1) implement full gff3 initialization of Genome/Exon classes (UGH) (below 2,5 are same tasks)
-    2) implement FASTA coordinate/chromosome referencing to create CDS
-    5) implement genome wide composite class of genes (02/10/17 half way done, fasta reference to chromosome is done, add method to insert features)
+
 7) think about class hierarchy and inheritance (see bio.seq.seq inheritance, dict inheritance,csvhomologs inheritance, genome inheritance)
 8) figure out how to make the adaptors & builders singletons (02/10/17 this is probably not super necessary but would be nice; however appears to require making a new super class for all builders)
 9) figure out an optimal time to export files so variants do not have to be reloaded continuously
-10) make variants class iterable (02/10/17 is this still necessary? - .of_strain() method seems to handle all that is demanded
 11) add scaling algorithm (02/10/17 scaler.py)
 12) add subprocess spawning for MUSCLE, massprf (02/10/17 see aligntrim.py)
-13) implement reverse complementation (02/10/17 by inheriting Bio.Seq.Seq, Chromosomes and CodingSequences should be capable of reverse_complement)
 14) implement codon scanning (02/10/17 this can get messy really quickly - reconsider implementation; 
         if desire to include, see extractPoly.py)
 '''
@@ -69,27 +77,30 @@ class Genome(object):
         self.species = species
         self.numchromosomes = numchromosomes
         self.CDS = {}
+        self.genes = []
         self.chromosomes = {n:'' for n in range(1, numchromosomes+1)}
 
     def __repr__(self):
-        return repr(self.species + "_" + self.strain)
+        return repr(self.species + "_" + self.name)
 
     def __str__(self):
-        return str(self.species + "_" + self.strain)
+        return str(self.species + "_" + self.name)
 
     def getChromosomes(self):
         for n in range(1, self.numchromosomes+1):
             yield(self.chromosomes[n])
 
     def addCDS(self, gene):
-        if not isinstance(gene, CodingSequence):
-            raise AttributeError("passed gene is not of type CodingSequence")
+        if not isinstance(gene, CodingAnnotation):
+            raise AttributeError("passed gene is not of type CodingAnnotation")
         self.CDS[gene.name] = gene
+        self.genes.append(gene.name)
 
     def write(self, directory, filename = None):
         if not filename:
             filename = str(self)
         if str(directory):
+            #insert event logger here
             SeqIO.write([SeqRecord.SeqRecord(chromo, id=chromo.id, description=chromo.description) for chromo in self.getChromosomes()], str(directory) + filename, "fasta")
         
 class ReferenceGenome(Genome):
@@ -115,14 +126,22 @@ class ReferenceGenome(Genome):
         #referenceChromosomes is a list of chromosomes w/ sequences
         Genome.__init__(self, species, max(referenceChromosomes))
         self.substrains = {}
-        self.strain = "reference"
+        self.substrains_list = []
+        self.name = "reference"
         for n in range(1, self.numchromosomes+1):
             self.chromosomes[n] = Chromosome(self, n, referenceChromosomes[n])
 
     def addStrain(self, strain):
         if not isinstance(strain, VariantGenome):
             raise AttributeError("error adding variantstrain, improper variantGenome supplied")
-        self.substrains[strain.strain] = strain
+        self.substrains[strain.name] = strain
+        self.substrains_list.append(strain.name)
+
+    def addCDS(self, gene):
+        Genome.addCDS(self,gene)
+
+        for strain in self.substrains_list:
+            self.substrains[strain].genes.append(gene.name)
 
 class VariantGenome(Genome):
     '''VariantGenome
@@ -144,15 +163,24 @@ class VariantGenome(Genome):
     def __init__(self, reference, strain, variants):
         Genome.__init__(self, reference.species, reference.numchromosomes)
         self.reference = reference
-        self.strain = strain
+        self.name = strain
         self.variants = variants
-
+        self.substrains = None
         self.chromosomes = reference.chromosomes
 
-        for snp in self.variants:
-            self.chromosomes[snp.chromosome].sequence[snp.pos] = snp.gt
+        self.relatives = []
 
-class Chromosome(Seq.Seq):
+        for snp in self.variants:
+            #insert event logger here
+            self.chromosomes[snp.chromosome][snp.coordinate.pos] = snp.gt
+
+    def addRelative(self, relative):
+        self.relatives.append(relative)
+
+    def addCDS(self, gene):
+        self.reference.addCDS(gene)
+
+class Chromosome(Seq.MutableSeq):
     '''Chromosome
     extends Bio.Seq.Seq
     See biopython documentation for full documentation
@@ -162,7 +190,7 @@ class Chromosome(Seq.Seq):
         sequence: str sequence of chromosome extracted 
     '''
     def __init__(self, reference, number, sequence):
-        Seq.Seq.__init__(self, sequence, generic_dna)
+        Seq.MutableSeq.__init__(self, sequence, generic_dna)
         self.genome = reference
         self.number = int(number)
         self.id = str(self.number)
@@ -172,13 +200,13 @@ class Chromosome(Seq.Seq):
     def description(self):
         return self._description
 
-class CodingSequence(object):
+class CodingAnnotation(object):
 
     '''PLEASE make sure to adopt 0 indexing of coordinates from gff3'''
     def __init__(self, reference, name, coordinates, strand, homolog = None, gene_id = None):
         self.reference = reference
         self.species = reference.species
-        self.genename = name
+        self.name = name
         self.coordinates = coordinates
         self.chromosome = coordinates[0].chromosome
         self.strand = strand
@@ -193,7 +221,7 @@ class CodingSequence(object):
         return repr(str(self))
 
     def __str__(self):
-        return str(self.species) + ' ' + str(self.genename)
+        return str(self.species) + ' ' + str(self.name)
 
     def __len__(self):
         return reduce(lambda x, y: x+y, map(lambda x: len(x), self.coordinates))
@@ -201,15 +229,55 @@ class CodingSequence(object):
     def getSequence(self, strain):
         curstrain = self.reference.substrains[strain]
         chromosome = curstrain.chromosomes[self.chromosome]
-        sequence = Seq(''.join([chromosome[coordinate.pos[0]:coordinate.pos[1]] for coordinate in self.coordinates]),generic_dna)
-        if self.strand is '-':
-            return sequence.reverse_complement()
+        sequence = ''.join([chromosome[coordinate.pos[0]:coordinate.pos[1]] for coordinate in self.coordinates])
+        return CodingSequence(curstrain, self.name, self.strand, sequence, complemented = False, gene_id = self.gene_id, homolog = self.homolog)
+
+class CodingSequence(Seq.Seq):
+    """
+    docstring for CodingSequence
+
+    Created by coding annotation class
+
+    attributes:
+        self.strain - reference to parent strain genome
+        self.name - name of coding sequence
+        self.strand - string "+" or '-'
+        self.sequence - input as a string
+        self.complemented - tracks whether has been complemented
+    methods:
+        reverse_complement: 
+            if has been complemented already, returns self;
+            if has not been complemented and strand == '-',
+            return instance of CodingSequence w/ reverse complement of gene
+    """
+    def __init__(self, strain, name, strand, sequence, complemented = False, gene_id = None, homolog = None):
+        if not isinstance(strain, Genome):
+            raise AttributeError("no valid strain linked to coding sequence")
+        Seq.Seq.__init__(self, sequence, generic_dna)
+        self.strain = strain
+        self.name = name
+        self.strand = strand
+        self.complemented = complemented
+        self.homolog = homolog
+
+        if gene_id:
+            self.gene_id = gene_id
         else:
-            return str(sequence)
+            self.gene_id = self.name
 
+        if self.strand == '-':
+            self = self.reverse_complement()
 
+    def __repr__(self):
+        return repr(str(self.strain) + " " + str(self.name))
 
-class Variants(object):s
+    def reverse_complement(self):
+        if not self.complemented and self.strand == '-':
+            return CodingSequence(self.strain, self.name, self.strand, str(Seq.Seq.reverse_complement(self)), complemented = True)
+        else:
+            return self
+
+class Variants(object):
     '''Variants, a composite class of Variant leafs
         attributes:
             strains: the strains that have been called
@@ -253,9 +321,9 @@ class Variants(object):s
             raise ValueError("strain not in Variants")
         else:
             if chromosome:
-                return filter(lambda l: l.chromosome == str(chromosome), self._snps_by_strain[strain])
+                return sorted(filter(lambda l: l.chromosome == str(chromosome), self._snps_by_strain[strain]), key = lambda x: x.coordinate.start)
             else:
-                return self._snps_by_strain[strain].sort(key=lambda x: x.chromosome).sort(key=lambda x: x.pos)
+                return sorted(self._snps_by_strain[strain], key = lambda x: (x.chromosome, x.coordinate.start))
 
     def on_chromosome(self, chromosome):
         hits = list(filter(lambda l: l.chromosome == str(chromosome), self.locations))
@@ -295,9 +363,10 @@ class Variant(object):
         if not isinstance(coordinate, Coordinate):
             raise AttributeError("invalid coordinate supplied")
         self.coordinate = coordinate
+        self.chromosome = coordinate.chromosome
         self.strain = strain
-        self.gt = gt
-        self.ref = ref
+        self.gt = str(gt)
+        self.ref = str(ref)
 
     def __repr__(self):
         return repr((self.strain, self.coordinate, self.gt))
@@ -379,21 +448,23 @@ class CDSAdaptorBuilder(object):
 
 class VariantsAdaptorBuilder(object):
     '''Interpret passed variant format file and return properly interfaced variant file'''
-    def __new__(self,frmt, variants):
-        if frmt == 'vcf':
+    def __new__(self, variants, frmt = 'VCF'):
+        frmt = frmt.upper()
+        if frmt == 'VCF':
             return PyVCFAdaptor(variants)
 
 class GenomeAdaptorBuilder(object):
     '''similar to other AdaptorBuilders, this one builds genome adaptors based on passed formatting
     add support **kwargs to add variants'''
     def __new__(self, reference, species, frmt = "FASTA", variants = None, **kwargs):
+        frmt = frmt.upper()
         if not Path(reference).is_file():
             raise AttributeError("no valid reference genome supplied")
         if not species:
             raise AttributeError("No species supplied")
         if not frmt:
             raise IOError("No parse format supplied")
-        if frmt == 'placeholder':
+        if frmt == 'PLACEHOLDER':
             #add new formats for parsing here
             pass
         elif frmt == "FASTA":
@@ -404,19 +475,21 @@ class GenomeAdaptorBuilder(object):
 
 class HomologAdaptorBuilder(object):
     '''Adapts input homolog formats to HomologAdaptor'''
-    def __new__(self, homologyfile, frmt = "CSVa"):
+    def __new__(self, homologyfile, frmt = "CSVA"):
+        frmt = frmt.upper()
         if not Path(homologyfile).is_file():
             raise AttributeError("No valid homology file specified")
-        if frmt == "CSVa":
+        if frmt == "CSVA":
             #this file type is useful when you have two distinct divergent species with a CSV file mapping of the homologs
             return CSVaHomologs(homologyfile)
-        elif frmt == "CSVb":
+        elif frmt == "CSVB":
             return CSVbHomologs(homologyfile)
 
 '''adaptors'''
 
 class GffUtilAdaptor(object):
     '''to do:
+    Document this class
 
     1) fix **kwargs checking to account for all scenarios - consider using paper logic diagram first
         - document logic as right now it is a bit obtuse
@@ -447,14 +520,14 @@ class GffUtilAdaptor(object):
             if feature.featuretype=='gene':
                 yield feature
 
-    def createCodingSequence(self, feature, reference, **kwargs):
+    def createCodingAnnotation(self, feature, reference, **kwargs):
         if not isinstance(feature, gffutils.feature.Feature):
             raise AttributeError("passed feature is not of type gffutils.feature.Feature")
-        coordinates = list(map(lambda x: Coordinate(x, x['chrom'], x['start']-1, x['stop']), self.db.children(feature, featuretype = 'CDS', order_by = 'start')))
-        name = feature['name']
-        gene_id = feature['ID']
-        strand = feature['strand']
-        cds = CodingSequence(reference, name, coordinates, strand, gene_id = gene_id)
+        coordinates = list(map(lambda x: Coordinate(int(x.chrom), x.start-1, x.end), self.db.children(feature, featuretype = 'CDS', order_by = 'start')))
+        name = feature.attributes['Name'][0]
+        gene_id = feature.attributes['ID'][0]
+        strand = feature.strand
+        cds = CodingAnnotation(reference, name, coordinates, strand, gene_id = gene_id)
         reference.addCDS(cds)
         return cds
 
@@ -593,6 +666,14 @@ class DirectoryTree(object):
 
 class Program(object):
     """docstring for program"""
-    def __init__(self):
-        pass
-        
+    def __init__(self, inputfiles, rootdir):
+        self.directories = DirectoryTree(rootdir)
+
+
+def test():
+    variants = VariantsAdaptorBuilder("../ricemassprf/partfilerice")
+    genomes = GenomeAdaptorBuilder("../ricemassprf/referencegenome_12chro.fa", "rice", variants = variants)
+    args = {'db':'../ricemassprf/ricefeatureDB'}
+    annotations = CDSAdaptorBuilder('gff3',**args)
+
+    return [variants,genomes, args, annotations]
