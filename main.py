@@ -11,20 +11,6 @@ import csv
 import logging
 
 '''
-fix this test output from createCodingAnnotation:
-suspect it has something to do with  GFF3 annotations that are reversed so that end < start
-Traceback (most recent call last):
-  File "<stdin>", line 2, in <module>
-  File "/Users/jaystanley/Documents/School/Grad/townsend/massprf-pipeline/main.py", line 522, in createCodingAnnotation
-    cds = CodingAnnotation(reference, name, coordinates, strand, gene_id = gene_id)
-  File "/Users/jaystanley/Documents/School/Grad/townsend/massprf-pipeline/main.py", line 210, in __init__
-    self.length = len(self)
-  File "/Users/jaystanley/Documents/School/Grad/townsend/massprf-pipeline/main.py", line 219, in __len__
-    return reduce(lambda x, y: x+y, map(lambda x: len(x), self.coordinates))
-  File "/Users/jaystanley/Documents/School/Grad/townsend/massprf-pipeline/main.py", line 219, in <lambda>
-    return reduce(lambda x, y: x+y, map(lambda x: len(x), self.coordinates))
-ValueError: __len__() should return >= 0
-
 
 7) think about class hierarchy and inheritance (see bio.seq.seq inheritance, dict inheritance,csvhomologs inheritance, genome inheritance)
 8) figure out how to make the adaptors & builders singletons (02/10/17 this is probably not super necessary but would be nice; however appears to require making a new super class for all builders)
@@ -414,7 +400,7 @@ class Coordinate(object):
 
     def __len__(self):
         if self.stop != self.start:
-            return self.start-self.stop
+            return self.stop-self.start
         else:
             return 1
 
@@ -524,6 +510,7 @@ class GffUtilAdaptor(object):
         if not isinstance(feature, gffutils.feature.Feature):
             raise AttributeError("passed feature is not of type gffutils.feature.Feature")
         coordinates = list(map(lambda x: Coordinate(int(x.chrom), x.start-1, x.end), self.db.children(feature, featuretype = 'CDS', order_by = 'start')))
+        print(coordinates)
         name = feature.attributes['Name'][0]
         gene_id = feature.attributes['ID'][0]
         strand = feature.strand
