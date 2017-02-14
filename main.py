@@ -1,18 +1,15 @@
 import gffutils
 import vcf
 import subprocess
+import pandas as pd
 from functools import reduce
 from Bio import SeqIO, Seq, SeqRecord
 from Bio.Alphabet import generic_dna
 from pathlib import Path
 import itertools
-import csv
 import logging
 
 '''
-
-7) think about class hierarchy and inheritance (see bio.seq.seq inheritance, dict inheritance,csvhomologs inheritance, genome inheritance)
-8) figure out how to make the adaptors & builders singletons (02/10/17 this is probably not super necessary but would be nice; however appears to require making a new super class for all builders)
 9) figure out an optimal time to export files so variants do not have to be reloaded continuously
 11) add scaling algorithm (02/10/17 scaler.py)
 12) add subprocess spawning for MUSCLE, massprf (02/10/17 see aligntrim.py)
@@ -50,8 +47,32 @@ class TwoWayDict(dict):
         return dict.__len__(self) // 2
 
 class HomologyMap(object):
-    def __init__(self, species, homologs):
-        pass
+
+    def __init__(self, name, homologs = 'ALL'):
+        homologs = homologs.upper()
+        if homologs == 'ALL':
+            self.homologs = 'ALL'
+        else:
+            pass
+        self.name = name
+        self.group_name_dict = {}
+        self.group_genome_dict = {}
+        self.group_list = []
+
+    def addGroup(self, groupname):
+        self.group_name_dict[groupname] = []
+        self.group_list.append(groupname)
+
+    def addToGroup(self, groupname, strainname):
+        if not isinstance(strainname,list):
+            strainName = [str(strainname)]
+        if name not in self.group_list:
+            self.addGroup(groupname)
+        self.group_name_dict[groupname] += strainname
+
+    def buildMapToGenomes(self, genomes):
+        for group in self.group_list:
+            self.group_genome_dict[group] = [genome for genome in genomes if genome.name in group_name_dict[group]]
 
 class Genome(object):
     '''Parent class for ReferenceGenome and VariantGenome
@@ -62,8 +83,9 @@ class Genome(object):
         self.species = species
         self.numchromosomes = numchromosomes
         self.CDS = {}
-        self.genes = []
+        self.genes_list = []
         self.chromosomes = {n:'' for n in range(1, numchromosomes+1)}
+        self.genes_map = {}
 
     def __repr__(self):
         return repr(self.species + "_" + self.name)
@@ -71,23 +93,50 @@ class Genome(object):
     def __str__(self):
         return str(self.species + "_" + self.name)
 
+    def __iter__(self):
+        for genome in self.substrains_list:
+            yield self.substrains_map[genome]
+
     def getChromosomes(self):
         for n in range(1, self.numchromosomes+1):
             yield(self.chromosomes[n])
 
+    def gene_from_index(self, index):
+        try:
+            genename = self.genes_list[index]
+            return self.genes_map[genename]
+        except:
+            return False
+
     def addCDS(self, gene):
         if not isinstance(gene, CodingAnnotation):
             raise AttributeError("passed gene is not of type CodingAnnotation")
-        self.CDS[gene.name] = gene
-        self.genes.append(gene.name)
+        
+        if len(self.genes) == 0:
+            self.genes_list.append(gene.name)
+        else: # insertion sort of genes by length
+            index = 0
+            curgene = gene_from_index(index)
+            while len(gene) >= len(curgene):
+                index += 1
+                curgene = gene_from_index(index)
+            self.genes_list.insert(index, gene.name)
+        self.genes_map[gene.name] = gene
+
 
     def write(self, directory, filename = None):
         if not filename:
             filename = str(self)
         if str(directory):
             #insert event logger here
-            SeqIO.write([SeqRecord.SeqRecord(chromo, id=chromo.id, description=chromo.description) for chromo in self.getChromosomes()], str(directory) + filename, "fasta")
-        
+            f = Path(directory).joinpath(filename)
+            f.touch()
+            with f.open('w') as writefile:
+                SeqIO.write([SeqRecord.SeqRecord(chromo, id=chromo.id, description=chromo.description) for chromo in self.getChromosomes()], writefile, "fasta")
+    
+    def export(self,directory, filename = None):
+        for genome in self:
+            genome.write(directory, filename)
 class ReferenceGenome(Genome):
     '''ReferenceGenome:
         extends Genome
@@ -110,8 +159,8 @@ class ReferenceGenome(Genome):
     def __init__(self, species, referenceChromosomes):
         #referenceChromosomes is a list of chromosomes w/ sequences
         Genome.__init__(self, species, max(referenceChromosomes))
-        self.substrains = {}
-        self.substrains_list = []
+        self.substrains_map = {"reference":self}
+        self.substrains_list = ["reference"]
         self.name = "reference"
         for n in range(1, self.numchromosomes+1):
             self.chromosomes[n] = Chromosome(self, n, referenceChromosomes[n])
@@ -119,14 +168,14 @@ class ReferenceGenome(Genome):
     def addStrain(self, strain):
         if not isinstance(strain, VariantGenome):
             raise AttributeError("error adding variantstrain, improper variantGenome supplied")
-        self.substrains[strain.name] = strain
+        self.substrains_map[strain.name] = strain
         self.substrains_list.append(strain.name)
 
     def addCDS(self, gene):
         Genome.addCDS(self,gene)
-
         for strain in self.substrains_list:
-            self.substrains[strain].genes.append(gene.name)
+            self.substrains_map[strain].genes_list = self.genes_list
+            self.substrains_map[strain].genes_map = self.genes_map
 
 class VariantGenome(Genome):
     '''VariantGenome
@@ -149,16 +198,25 @@ class VariantGenome(Genome):
         Genome.__init__(self, reference.species, reference.numchromosomes)
         self.reference = reference
         self.name = strain
-        self.variants = variants
-        self.substrains = None
+        
+        self.substrains_list = [self.name]
+        self.substrains_map = {self.name: self}
         self.chromosomes = reference.chromosomes
 
         self.relatives = []
-
-        for snp in self.variants:
+        if all(map(lambda ele: isinstance(ele, Variant), iter(variants))): 
+            self.variants = variants # if variants is a list of variant
+            for snp in self.variants:
             #insert event logger here
-            self.chromosomes[snp.chromosome][snp.coordinate.pos] = snp.gt
+                self.chromosomes[snp.chromosome][snp.coordinate.pos] = snp.gt
+            for n in range(1,self.numchromosomes+1):
+                self.chromosomes[n] = Chromosome(self, self.chromosomes[n].number, str(self.chromosomes[n]))
+        else:
+            self.variants = None
+            for n in range(1, self.numchromosomes+1):
+                self.chromosomes[n] = Chromosome(self, n, variants[n])
 
+        
     def addRelative(self, relative):
         self.relatives.append(relative)
 
@@ -498,10 +556,13 @@ class GffUtilAdaptor(object):
             self.db = gffutils.create_db(str(self.gff3), str(self.dbname))
         self.db = gffutils.FeatureDB(str(self.dbname))
 
-    def getGenes(self):
-        for feature in self.db.all_features():
-            if feature.featuretype=='gene':
-                yield feature
+    def getGenes(self, genes = 'all'):
+        is_gene = lambda x: x.featuretype == 'gene'
+        is_specified = lambda x: x.attributes['Name'][0] in genes
+        if genes == 'all':
+            return (feature for feature in self.db.all_features() if is_gene(feature))
+        else:
+            return (feature for feature in self.db.all_features() if is_gene(feature) and is_specified(feature))
 
     def createCodingAnnotation(self, feature, reference, **kwargs):
         if not isinstance(feature, gffutils.feature.Feature):
@@ -562,19 +623,28 @@ class FastaGenomeAdaptor(object):
         referenceGenome = ReferenceGenome(species, parsedchromosomes)
         reference_file.close()
 
-        if variants:
-            for strain in variants.strains:
-                referenceGenome.addStrain(VariantGenome(referenceGenome, strain, variants.of_strain(strain)))
+        if not isinstance(variants, Variants) and variants:
+            print("variants is not a Variants type, checking for multi-genome import")
+            if isinstance(variants, list) and isinstance(variants[0], str):
+                for file in variants:
+                    if Path(file).is_file():
+                        with open(file) as variantfile:
+                            parsedchromosomes = {int(n.id):str(n.seq) for n in SeqIO.parse(reference_file, "fasta")}
+                            referenceGenome.addStrain(VariantGenome(referenceGenome, species, parsedchromosomes))
+        else:
+            if variants:
+                for strain in variants.strains:
+                    referenceGenome.addStrain(VariantGenome(referenceGenome, strain, variants.of_strain(strain)))
 
         return referenceGenome
-        #if variants are passed, we are going to build a bunch of new genome objects and return the genomes as a list
+        #if variants are passed, we are going to build a bunch of new genome objects
         #the genomes should build & insert their variants themselves. 
 
 class CSVHomologs(object):
-    def __init__(self, homologyfile):
+    def __init__(self, homologyfile, name):
         self.csvfilename = homologyfile
         self.csvfilehandle = open(self.csvfilename)
-        self.reader = csv.reader(csvfilehandle)
+        self.df = pd.read_csv(csvfilehandle)
 
     def close(self):
         self.csvfilehandle.close()
@@ -586,8 +656,12 @@ class CSVaHomologs(CSVHomologs):
 
 class CSVbHomologs(CSVHomologs):
     '''this file format has two groupings of species/strains, and the species are using the same reference genome'''
-    def __init__(self):
-        pass
+    def __new__(self, homologyfile, name):
+        CSVHomologs.__init__(self, homologyfile, name)
+        homologymap = HomologyMap(name, homologs = 'all')
+        for column in self.csv_df:
+            homologymap.addGroup(column)
+            homologymap.addToGroup(list(self.df[column][pd.notnull(self.df[column])]))
 
 ''' begin algorithm objects '''
 '''these should all inherit the ability to spawn subprocesses and maybe do file writing'''
@@ -628,13 +702,26 @@ class MASSPRF_Queuer(object):
     '''
     pass
     
+class MASSPRF_DB(object):
+    """
+    MASSPRF_DB:
+        SQLite 3 DB that maintains homology relationships and file references for the directory structure.  Should allow focused MASSPRF analysis via:
+        chromosome querying
+        species querying
+        size querying
+        name querying
+
+    draw schema on paper first before implementing
+    """
+
+    pass
 class DirectoryTree(object):
     """docstring for DirectoryTree"""
     def __init__(self, rootdir):
         self._rootdir = Path(rootdir)
-        if not self.rootdir.is_dir():
+        if not self._rootdir.is_dir():
             raise IOError("Invalid root directory supplied")
-        self.outdir = self.mksubdir(self.rootdir,"out")
+        self.outdir = self.mksubdir(self._rootdir,"out")
         self.genomedir = self.mksubdir(self.outdir,"genomes")
         self.alignments = self.mksubdir(self.outdir,"alignments")
         self.prf_pre = self.mksubdir(self.outdir,"prf_pre")
@@ -654,9 +741,7 @@ class Program(object):
 
 
 def test():
+    tree = DirectoryTree('.')
     variants = VariantsAdaptorBuilder("../ricemassprf/partfilerice")
     genomes = GenomeAdaptorBuilder("../ricemassprf/referencegenome_12chro.fa", "rice", variants = variants)
-    args = {'db':'../ricemassprf/ricefeatureDB'}
-    annotations = CDSAdaptorBuilder('gff3',**args)
-
-    return [variants,genomes, args, annotations]
+    genomes.export(tree.genomedir)
