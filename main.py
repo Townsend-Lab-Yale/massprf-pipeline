@@ -2,9 +2,12 @@ import gffutils
 import vcf
 import subprocess
 import pandas as pd
+import copy
+import os
 from functools import reduce
 from Bio import SeqIO, Seq, SeqRecord
 from Bio.Alphabet import generic_dna
+from Bio.Align.Applications import MuscleCommandline
 from pathlib import Path
 import itertools
 import logging
@@ -14,7 +17,7 @@ import logging
 11) add scaling algorithm (02/10/17 scaler.py)
 12) add subprocess spawning for MUSCLE, massprf (02/10/17 see aligntrim.py)
 14) implement codon scanning (02/10/17 this can get messy really quickly - reconsider implementation; 
-        if desire to include, see extractPoly.py)
+        if desire to include, see extractPoly.py
 '''
 
 '''constants definitions'''
@@ -84,7 +87,7 @@ class Genome(object):
         self.numchromosomes = numchromosomes
         self.CDS = {}
         self.genes_list = []
-        self.chromosomes = {n:'' for n in range(1, numchromosomes+1)}
+        self.chromosome_map = {n:'' for n in range(1, numchromosomes+1)}
         self.genes_map = {}
 
     def __repr__(self):
@@ -99,7 +102,7 @@ class Genome(object):
 
     def getChromosomes(self):
         for n in range(1, self.numchromosomes+1):
-            yield(self.chromosomes[n])
+            yield(self.chromosome_map[n])
 
     def gene_from_index(self, index):
         try:
@@ -137,6 +140,7 @@ class Genome(object):
     def export(self,directory, filename = None):
         for genome in self:
             genome.write(directory, filename)
+
 class ReferenceGenome(Genome):
     '''ReferenceGenome:
         extends Genome
@@ -144,7 +148,7 @@ class ReferenceGenome(Genome):
         attributes:
             species: a blunt grouping name useful
             numchromosomes: the total number of chromosomes in the genome
-            chromosomes: a dictionary mapping each chromosome number to a Chromosome object that holds the sequence
+            chromosome_map: a dictionary mapping each chromosome number to a Chromosome object that holds the sequence
             substrains: dictionary mapping of VariantGenome's
 
         methods:
@@ -163,7 +167,7 @@ class ReferenceGenome(Genome):
         self.substrains_list = ["reference"]
         self.name = "reference"
         for n in range(1, self.numchromosomes+1):
-            self.chromosomes[n] = Chromosome(self, n, referenceChromosomes[n])
+            self.chromosome_map[n] = Chromosome(self, n, referenceChromosomes[n])
 
     def addStrain(self, strain):
         if not isinstance(strain, VariantGenome):
@@ -201,20 +205,21 @@ class VariantGenome(Genome):
         
         self.substrains_list = [self.name]
         self.substrains_map = {self.name: self}
-        self.chromosomes = reference.chromosomes
+        self.chromosome_map = copy.deepcopy(reference.chromosome_map)
 
         self.relatives = []
         if all(map(lambda ele: isinstance(ele, Variant), iter(variants))): 
             self.variants = variants # if variants is a list of variant
             for snp in self.variants:
             #insert event logger here
-                self.chromosomes[snp.chromosome][snp.coordinate.pos] = snp.gt
-            for n in range(1,self.numchromosomes+1):
-                self.chromosomes[n] = Chromosome(self, self.chromosomes[n].number, str(self.chromosomes[n]))
+                self.chromosome_map[snp.chromosome][snp.coordinate.pos] = snp.gt
+            for chromosome in self.getChromosomes():
+                chromosome.genome = self
+
         else:
             self.variants = None
             for n in range(1, self.numchromosomes+1):
-                self.chromosomes[n] = Chromosome(self, n, variants[n])
+                self.chromosome_map[n] = Chromosome(self, n, variants[n])
 
         
     def addRelative(self, relative):
@@ -271,7 +276,7 @@ class CodingAnnotation(object):
 
     def getSequence(self, strain):
         curstrain = self.reference.substrains[strain]
-        chromosome = curstrain.chromosomes[self.chromosome]
+        chromosome = curstrain.chromosome_map[self.chromosome]
         sequence = ''.join([chromosome[coordinate.pos[0]:coordinate.pos[1]] for coordinate in self.coordinates])
         return CodingSequence(curstrain, self.name, self.strand, sequence, complemented = False, gene_id = self.gene_id, homolog = self.homolog)
 
@@ -671,20 +676,46 @@ class SubProcessSpawner(object):
     def __init__(self, cores):
         self.numcores = cores-1 # cores - 1 because the allocating process consumes 1 core
 
-class Aligner(SubProcessSpawner):
+class Aligner(object):
     '''Aligner: Requires MUSCLE, Biopython
-
+    figure out how to manage naming through this pipe
     given a collection of coding sequences, pass them to MUSCLE and align them.  return them in a form analogous to their native structures
     '''
-    pass
+    def __new__(self, sequences, outdir):
+        muscle_cline = MuscleCommandline(clwstrict=True)   
+        self.child = subprocess.Popen(str(muscle_cline), stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.PIPE, universal_newlines = True, shell=True, preexec_fn=os.setsid)
+        SeqIO.write(sequences, self.child.stdin, "fasta")
+        self.child.stdin.close()
+        alignment = AlignIO.read(self.child.stdout,"clustal")
+        
+        return alignment
 
 class Trimmer(object):
     '''Trimmer:
     Given an alignment, trim all '-' and return sequences in their native structure
     '''
-    pass
+    def __new__(self, alignment):
+        inserts = []
+        codons = []
+        # this could probably be converted to np.arrays and use logical indexing to delete gaps for (?) more efficiency
+        for i in range(len(alignment)): # go through each sequence in the alignment
+            sequence = str(alignment[i].seq)
+            codons.append([sequence[n:n+3] for n in range (0, len(sequence), 3)])
+            inserts.append([c for c, x in enumerate(codons[i]) if '-' in x])
+             # check the sequence for gaps ('-'), append a list of the indices of gaps for each alignment
+        inserts=set([item for sublist in inserts for item in sublist]) # iterate through the nested list and condense into a set (removes duplicates)
+        inserts = list(inserts) #flip it back to a list for sorting and indexing
+        for i in range(len(codons)): # go back through each alignment
+            record = codons[i] # set to current alignment
+            for z in sorted(inserts,reverse=True): # index of gaps, in reverse so that the indices do not change
+                del record[z]
 
-class MASSPRF_Pre(SubProcessSpawner):
+            codons[i] = ''.join(record)
+            alignment[i].seq=codons[i]
+            
+        return alignment
+
+class MASSPRF_Pre(object):
     '''MASSPRF_Pre:
     Given aligned & trimmed sequences, spawn a MASSPRF subprocess to preprocess them w/ annotation of polymorphism sites
     '''
