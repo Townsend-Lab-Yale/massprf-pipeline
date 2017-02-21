@@ -12,10 +12,10 @@ pipeline for genome wide MASSPRF analysis
 
 4) Get package dependencies
 
-    - Add Bioconda channel to Conda: `conda config --add channels bioconda`
-    - Biopython:`conda install biopython`
-    - Gffutils: `conda install gffutils`
-    - pyvcf: `conda install pyvcf`
+Add Bioconda channel to Conda: `conda config --add channels bioconda`
+Biopython:`conda install biopython`
+Gffutils: `conda install gffutils`
+pyvcf: `conda install pyvcf`
     
 # Usage:
 
