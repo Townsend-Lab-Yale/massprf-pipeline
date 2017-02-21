@@ -23,7 +23,7 @@ from Bio.Align.Applications import MuscleCommandline
 '''
 
 '''constants definitions'''
-
+LOGGER = logging.getLogger(__name__)
 '''tool functions'''
 
 def allele(gt):
@@ -54,6 +54,7 @@ class TwoWayDict(dict):
 class HomologyMap(object):
 
     def __init__(self, name, homologs = 'ALL'):
+        LOGGER.info("Homology Map %s initialized " % name)
         homologs = homologs.upper()
         if homologs == 'ALL':
             self.homologs = 'ALL'
@@ -540,7 +541,107 @@ class Trimmed(object):
 
 class PolyDiv(object):
     '''accepts massprf_preprocess output, accepts scaling, returns a reinstantiation descendant that cannot scale'''
-    pass
+    def __init__(self, file, genename, grouping):
+        if isinstance(file, str):
+            file = Path(file)
+                
+        try:
+            if not file.is_file():
+                raise IOError("Invalid file passed to PolyDiv class")
+            with file.open("r") as f:
+                self.contents = [line for line in f.read().splitlines() if line]
+                if "Can't" in contents[0]:
+                    raise AttributeError("Error due to silent clustering")
+                if "Error" in contents[0]:
+                    raise AttributeError("Error in MASSPRF_preprocess input parameters")
+                if "MAC-PRF" not in contents[0]:
+                    raise IOError("Not a MASSPRF file")
+                if "Mission accomplished" not in contents[-1]:
+                    raise AttributeError("File did not pass preprocessing")
+        except Exception as exception:
+            LOGGER.error("%s Polymorphism/Divergence import failed" % genename, exc_info=True)
+        else:
+            self.genename = genename
+            self.grouping = grouping
+            self._ogpol = next(filter(lambda s: s.startswith('Polymorphism:'),lines)).split()[1]
+            self._ogdiv = next(filter(lambda s: s.startswith('Divergence:'),lines)).split()[1]
+            self._polymorphism = self._ogpol
+            self._divergence = self._ogdiv
+            self._scale_factor = None
+            self.__divscaled, self.__polyscaled = False, False
+            
+            LOGGER.info("%s Polymorphism/Divergence file initialized with %s scale factor" % (self.genename, self.scale_factor))
+
+
+    def __len__(self):
+        if not self.scaled:
+            return len(self._ogpol)
+        else:
+            return len(self.polymorphism)
+
+    @property
+    def scaled(self):
+        return all((self.__divscaled, self.__polyscaled))
+
+    @property
+    def scale_factor(self):
+        l = len(self)
+        if self._scale_factor is None:
+            try:
+                if l <= 600:
+                    self._scale_factor = 1
+                elif l > 600 and l <=1800:
+                    self._scale_factor = 3
+                elif l > 1800 and l <= 3600:
+                    self._scale_factor = 6
+                elif l > 3600 and l <= 5400:
+                    self._scale_factor = 9
+                elif l > 5400 and l <= 7200:
+                    self._scale_factor = 12
+                elif l > 7200 and l <= 9000:
+                    self._scale_factor = 15
+                elif l > 9000 and l <= 10800:
+                    self._scale_factor = 18
+                elif l > 10800 and l <= 12600:
+                    self._scale_factor = 21
+                elif l > 12600 and l <= 14400:
+                    self._scale_factor = 24
+                elif l > 14400 and l <= 16200:
+                    self._scale_factor = 27
+                elif l > 16200 and l <= 18000:
+                    self._scale_factor = 30
+                elif l > 18000 and l <= 30000:
+                    self._scale_factor = 50
+                elif l > 30000 and l <= 70000:
+                    self._scale_factor = 117
+                else:
+                    raise ValueError("Poly/Div sequence too long, %s" % len(self))
+            except ValueError:
+                LOGGER.error("%s scaling returned invalid scale factor" % (self.genename), exc_info = True)
+        return self._scale_factor
+
+    @property
+    def polymorphism(self):
+        if not self.scaled:
+            if self._scale_factor is 1:
+                self.__polyscaled = True
+                self._polymorphism = self._ogpol
+            else:
+                self._polymorphism = Scaler()
+                self.__polyscaled = True
+        return self._polymorphism
+
+    @property
+    def divergence(self):
+        if not self.scaled:
+            if self._scale_factor is 1:
+                self.__divscaled = True
+                self._divergence = self._ogdiv
+            else:
+                self._divergence = Scaler(divergence)
+                self.__divscaled = True
+        return self._divergence
+
 
 '''adaptor builders'''
 
@@ -724,7 +825,6 @@ class CSVbHomologs(CSVHomologs):
         homologymap = HomologyMap(name, homologs = 'ALL')
         for column in self.csv_df:
             homologymap.addGroup(column)
-
             homologymap.addToGroup(column,[name + '_'+ strain for strain in self.csv_df[column][pd.notnull(self.csv_df[column])]])
         return homologymap
 
@@ -826,18 +926,47 @@ class MASSPRF_Queuer(object):
     
 class DirectoryTree(object):
     """docstring for DirectoryTree"""
+    __tree_dict = {"genomedir": "genomes", 
+                    "pre_align": "pre_alignment", 
+                    "alignments": "alignments",
+                    "trimmed": "trimmed",
+                    "prf_pre": "prf_preprocess",
+                    "scaled": "scaled",
+                    "csv": "csv"}
     def __init__(self, rootdir):
-        self._rootdir = Path(rootdir)
-        if not self._rootdir.is_dir():
-            raise IOError("Invalid root directory supplied")
-        self.outdir = self.mksubdir(self._rootdir,"out")
-        self.genomedir = self.mksubdir(self.outdir,"genomes")
-        self.pre_align = self.mksubdir(self.outdir, "pre_alignment")
-        self.alignments = self.mksubdir(self.outdir,"alignments")
-        self.trimmed = self.mksubdir(self.outdir, "trimmed")
-        self.prf_pre = self.mksubdir(self.outdir,"prf_pre")
-        self.scaled = self.mksubdir(self.outdir,"scaled")
-        self.csv = self.mksubdir(self.outdir, "csv")
+        try:
+            self._rootdir = Path(rootdir)
+            if not self._rootdir.is_dir():
+                raise IOError("Invalid root directory supplied")
+        except:
+            self._rootdir.mkdir()
+        try:
+            self.logpath = self._rootdir.joinpath(str("massprf_pipeline_log.txt"))
+            self.logpath.touch()
+        except:
+            default_logpath = Path.cwd().joinpath("log.txt")
+            self.logpath = default_logpath
+        finally:
+            logging.basicConfig(filename=str(self.logpath),
+                            filemode='a',
+                            format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+                            datefmt='%H:%M:%S',
+                            level=logging.DEBUG)
+        LOGGER.info("%s initialized as logpath" % self.logpath)
+        try:
+            self.outdir = self.mksubdir(self._rootdir, "out")
+        except:
+            LOGGER.error("%s directory failed to be created, defaulting to root" % self.outdir, exc_info=True)
+        else: 
+            LOGGER.info("%s output directory initialized" % self.outdir)
+        for variable, human_readable in self.__tree_dict.items():
+            try:
+                setattr(self, variable, self.mksubdir(self.outdir,human_readable))   
+            except:
+                LOGGER.error("%s failed to initialize as %s, defaulting output to root" (variable, human_readable), exc_info=True)
+                setattr(self, variable, self._rootdir)    
+            else:
+                LOGGER.info(variable + "set to %s" % getattr(self, variable))
 
     def mksubdir(self, root, directory):
         directory = root.joinpath(str(directory))
@@ -865,6 +994,7 @@ class Program(object):
         if not variants and len(genomes) <= 2 and not ignore_small_sample:
             raise AttributeError("<= 2 genomes supplied and no variants to build, massprf analysis is incomplete")
         self.directories = DirectoryTree(str(rootdir))
+        
         if variants:
             self.variants = VariantsAdaptorBuilder(str(variants))
         else:
