@@ -46,15 +46,15 @@ Append a colon and add the path to your symbolic links, such that it looks like 
 
 If you are working on a cluster, you may need to install miniconda directly from the package due to file permissioning/pip being unavailable.  In this case, download the file from https://conda.io/miniconda.html , run  it on the cluster, and make sure that the installation directory is added to your path via ~/.bashrc.  After installing miniconda, use `source ~/.bashrc` to source the path, then type `python` and check that your python version is >3.5 and is produced by 'Continuum Analytics'
 
-####2) Make sure your conda is up to date by running:
+#### 2) Make sure your conda is up to date by running:
 
 `conda update conda`
 
-####3) Update python to 3.5, or (optionally) create a python 3.5 virtual environment:
+#### 3) Update python to 3.5, or (optionally) create a python 3.5 virtual environment:
 
 `conda update python`
 
-####4) Get package dependencies
+#### 4) Get package dependencies
 
 Add Bioconda channel to Conda: 
 
@@ -76,7 +76,11 @@ pyvcf:
 
 `conda install pyvcf`
 
-    
+#### 5) Clone this repository
+
+`git clone https://github.com/Townsend-Lab-Yale/massprf-pipeline.git`
+
+
 # Usage:
 
 To run, type python massprf-pipeline.py <cli>
