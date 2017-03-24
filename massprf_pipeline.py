@@ -1,8 +1,7 @@
 import subprocess
 from pathlib import Path
-from argparse import ArgumentParser
 from functools import reduce
-from multiprocessing import Pool
+
 import itertools
 import copy
 import os
@@ -26,7 +25,7 @@ def allele(gt):
 ''' begin fundamental data structure definitions'''
 
 class HomologyMap(object):
-
+    '''simple structure that manages groups of genomes'''
     def __init__(self, name, homologs = 'ALL'):
         homologs = homologs.upper()
         if homologs == 'ALL':
@@ -212,7 +211,6 @@ class VariantGenome(Genome):
             self.variants = None
             for n in range(1, self.numchromosomes+1):
                 self.chromosome_map[n] = Chromosome(self, n, variants[n])
-        print(str(self) + " genome initialized")
 
     def get_chromosome(self, number):
         if self.variants:
@@ -395,7 +393,7 @@ class Variants(object):
         if strain not in self.strains:
             raise ValueError("strain not in Variants")
         else:
-            print(strain)
+
             if chromosome:
                 return self._snps_by_strain[strain][chromosome]
             else:
@@ -557,13 +555,8 @@ class HomologAdaptorBuilder(object):
 '''adaptors'''
 
 class GffUtilAdaptor(object):
-    '''to do:
-    Document this class
-
-    1) fix **kwargs checking to account for all scenarios - consider using paper logic diagram first
-        - document logic as right now it is a bit obtuse
-    2) fix createGene to initalize Gene classes
-    3) integrate with Genome?
+    ''' This class will build a gff util db if one is not passed to it.
+    once that check has been performed, it yields annotations
     '''
     def __init__(self, **kwargs):
         if not kwargs:
@@ -606,7 +599,7 @@ class GffUtilAdaptor(object):
 ## if the range on the GFF is 1-10, then the python string indices will be 0-9.  Therefore, str[0:10].  Check this to make sure it is right.
 class PyVCFAdaptor(object):
     '''adapts VCF files into Variants class of Variant leafs
-    skips all non-snps for now.  Fix!'''
+    skips all non-snps for now. '''
     def __new__(self, variants):
         if not Path(variants).is_file():
             raise IOError("Invalid filename supplied for VCF")
@@ -638,7 +631,6 @@ class FastaGenomeAdaptor(object):
     '''FastaGenomeAdaptor adapts biopython SeqIO genome into the genome class
     "species" here is a generic term, eg rice, banana, etc, that is useful for bluntly differentiating objects of type genome
 
-    Consider reworking the external representation of reference genome and its variants
     '''
     def __new__(self, reference, species, variants = None):
         #GenomeAdaptorBuilder already did the type checking of reference to insure it is a filetype
@@ -663,8 +655,7 @@ class FastaGenomeAdaptor(object):
                     referenceGenome.addStrain(VariantGenome(referenceGenome, strain, variants.of_strain(strain)))
 
         return referenceGenome
-        #if variants are passed, we are going to build a bunch of new genome objects
-        #the genomes should build & insert their variants themselves. 
+
 
 class CSVHomologs(object):
     def __init__(self, homologyfile, name):
@@ -691,6 +682,7 @@ class CSVbHomologs(CSVHomologs):
         return homologymap
 
 class SeqRecordPairing(object):
+    '''this class is used to manage grouped collections of sequences between collation, alignment, and trimming'''
     def __init__(self, name, inseqs):
         self.group1 = inseqs[0]
         self.group2 = inseqs[1]
@@ -774,130 +766,3 @@ class DirectoryTree(object):
         if not directory.is_dir():
             directory.mkdir()
         return directory
-
-class Program(object):
-    """docstring for program"""
-    def __init__(self, 
-                genomes, 
-                homologymap,
-                species, 
-                annotations = None, 
-                annotationsdb = None, 
-                rootdir = '.', 
-                variants = None, 
-                ignore_small_sample = False):
-        if not Path(genomes).is_file():
-            raise AttributeError("No genomes supplied for input")
-        if not Path(homologymap).is_file():
-            raise AttributeError("No homology map supplied for polymorphism-divergence mapping")
-        if not annotations and not annotationsdb:
-            raise AttributeError("No annotationsdb supplied and no annotations map for import")
-        if not variants and len(genomes) <= 2 and not ignore_small_sample:
-            raise AttributeError("<= 2 genomes supplied and no variants to build, massprf analysis is incomplete")
-        self.directories = DirectoryTree(str(rootdir))
-        
-        if variants:
-            self.variants = VariantsAdaptorBuilder(str(variants))
-        else:
-            self.variants = None
-        self.homologymap = HomologAdaptorBuilder(str(homologymap),species)
-        self.genomes = GenomeAdaptorBuilder(str(genomes),str(species), variants = self.variants)
-        self.homologymap.buildMapToGenomes(self.genomes)
-
-
-        annotationsargs = {key:value for key,value in {'db':annotationsdb,'gff3':annotations}.items() if value}
-        self.annotations = CDSAdaptorBuilder('gff3', **annotationsargs)
-
-
-    def export_genomes(self):
-        self.genomes.export(self.directories.genomedir)
-
-def build_genes_parallel(inputs):
-    cds = inputs[0]
-    annotations = inputs[1]
-    homologymap = inputs[2]
-    genomes = inputs[3]
-    directories = inputs[4]
-
-
-    grouping = []
-
-    for group in homologymap.group_list:
-        outbuffer = []
-        for genome in homologymap.group_genome_dict[group]:
-            outbuffer.append(genome.genes_map[cds.name].getSequence(genome))
-        outbuffer = [SeqRecord.SeqRecord(Seq.Seq(str(ele)), id=str(ele.strain)+'_'+str(ele.name)) for ele in outbuffer]
-        grouping.append(outbuffer)
-
-    grouping = SeqRecordPairing(cds.name, grouping)
-    print(cds.name, ' generated \n')
-    pre_alignedfiles = grouping.write(directories.pre_align, 'pre_alignment')
-    alignment = Aligner(grouping.unnested_groups)
-    print(cds.name, ' aligned \n')
-    grouping.edit_groups(alignment)
-    alignedfiles = grouping.write(directories.alignments, 'aligned')
-    trimmed = Trimmer(grouping.unnested_groups)
-    print(cds.name, ' trimmed \n')
-    grouping.edit_groups(trimmed)
-    trimmedfiles = grouping.write(directories.trimmed, 'trimmed')
-    
-    return [cds.name, 
-            len(cds), 
-            pre_alignedfiles[0], 
-            pre_alignedfiles[1],
-            alignedfiles[0],
-            alignedfiles[1],
-            trimmedfiles[0],
-            trimmedfiles[1]]
-
-def run(genes = 'ALL'):
-    program = Program("../ricemassprf/referencegenome_12chro.fa",
-                        '../ricemassprf/junruiricemap.csv',
-                        'rice',
-                        annotationsdb = '../ricemassprf/ricefeatureDB',
-                        variants = '../ricemassprf/partfilerice')
-    gene_annotations = map(lambda ele: program.annotations.createCodingAnnotation(ele, program.genomes), [gene for gene in program.annotations.getGenes(genes)])
-    inputs = [[gene, 
-                program.annotations,
-                program.homologymap,
-                program.genomes,
-                program.directories] for gene in gene_annotations]
-
-    #proc_pool = Pool(2)
-
-    #output = proc_pool.map(build_genes_parallel, inputs)
-    output = list(map(build_genes_parallel, inputs))
-    print(output)
-
-def test():
-    #tree = DirectoryTree('.')
-    #variants = VariantsAdaptorBui(lder("../ricemassprf/mass_rice")
-    #genomes = GenomeAdaptorBuilder("../ricemassprf/referencegenome_12chro.fa", "rice", variants = variants)
-    #genomes.export()
-    #return genomes
-    '''annotation_args = {'db':'../ricemassprf/ricefeatureDB'}
-    annotations = CDSAdaptorBuilder('gff3',**annotation_args)
-    target_genes = ['OS05T0522500-01']
-    gene = annotations.getGenes(target_genes)
-    output_annotation = []
-    output_sequences = []
-    for c in gene:
-        output_annotation.append(annotations.createCodingAnnotation(c, genomes))
-    for g in output_annotation:
-        output_sequences.append(g.getSequence(genomes.name))
-
-    return genomes, output_annotation, output_sequences'''
-
-
-'''skeleton code for chromosome tester'''
-'''
-genome = main.test()
-refchr = genome.get_chromosome(3)
-var = genome[1]
-varchr = var.get_chromosome(3)
-refchr != varchr
-'''
-'''command line
-if __name__ == '__main__':
-    parser = ArgumentParser(description = "Pipeline for processing genome data for downstream MASSPRF analysis")
-    parser.add_argument('-dir', dest = 'rootdir', )'''
