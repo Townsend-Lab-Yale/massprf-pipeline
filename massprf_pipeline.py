@@ -1,29 +1,20 @@
 import subprocess
 from pathlib import Path
-from argparse import ArgumentParser
 from functools import reduce
+
 import itertools
-import logging
 import copy
 import os
 import gffutils
 import vcf
 import pandas as pd
-from Bio import SeqIO, Seq, SeqRecord
+from Bio import SeqIO, Seq, SeqRecord, AlignIO
 from Bio.Alphabet import generic_dna
 from Bio.Align.Applications import MuscleCommandline
 
 
-'''
-9) figure out an optimal time to export files so variants do not have to be reloaded continuously
-11) add scaling algorithm (02/10/17 scaler.py)
-12) add subprocess spawning for MUSCLE, massprf (02/10/17 see aligntrim.py)
-14) implement codon scanning (02/10/17 this can get messy really quickly - reconsider implementation; 
-        if desire to include, see extractPoly.py
-'''
 
 '''constants definitions'''
-LOGGER = logging.getLogger(__name__)
 '''tool functions'''
 
 def allele(gt):
@@ -33,28 +24,9 @@ def allele(gt):
 
 ''' begin fundamental data structure definitions'''
 
-class TwoWayDict(dict):
-    '''TwoWayDict borrowed from http://stackoverflow.com/questions/1456373/two-way-reverse-map
-    This mapping allows bidirectional dictionary type. used by homology map'''
-    def __setitem__(self, key, value):
-        if key in self:
-            del self[key]
-        if value in self:
-            del self[value]
-        dict.__setitem__(self, key, value)
-        dict.__setitem__(self, value, key)
-
-    def __delitem__(self, key):
-        dict.__delitem__(self, self[key])
-        dict.__delitem__(self, key)
-
-    def __len__(self):
-        return dict.__len__(self) // 2
-
 class HomologyMap(object):
-
+    '''simple structure that manages groups of genomes'''
     def __init__(self, name, homologs = 'ALL'):
-        LOGGER.info("Homology Map %s initialized " % name)
         homologs = homologs.upper()
         if homologs == 'ALL':
             self.homologs = 'ALL'
@@ -189,7 +161,7 @@ class ReferenceGenome(Genome):
         self.substrains_list = [str(self)]
         for n in range(1, self.numchromosomes+1):
             self.chromosome_map[n] = Chromosome(self, n, referenceChromosomes[n])
-
+    
     def __repr__(self):
         outstr = Genome.__repr__(self) + " mapped to " + repr(self.substrains_list[1:])
         return repr(outstr)
@@ -239,7 +211,6 @@ class VariantGenome(Genome):
             self.variants = None
             for n in range(1, self.numchromosomes+1):
                 self.chromosome_map[n] = Chromosome(self, n, variants[n])
-        print(str(self) + " genome initialized")
 
     def get_chromosome(self, number):
         if self.variants:
@@ -321,7 +292,7 @@ class CodingAnnotation(object):
         return reduce(lambda x, y: x+y, map(lambda x: len(x), self.coordinates))
 
     def getSequence(self, strain):
-        curstrain = self.reference.substrains_map[strain.name]
+        curstrain = strain
         chromosome = curstrain.get_chromosome(self.chromosome)
         sequence = ''.join([str(chromosome[coordinate.pos[0]:coordinate.pos[1]]) for coordinate in self.coordinates])
         return CodingSequence(curstrain, self.name, self.strand, sequence, complemented = False, gene_id = self.gene_id, homolog = self.homolog)
@@ -357,17 +328,17 @@ class CodingSequence(Seq.Seq):
         if gene_id:
             self.gene_id = gene_id
         else:
-            self.gene_id = self.name
+            self.gene_id = str(self.strain) + ' ' + self.name 
 
         if self.strand == '-':
             self = self.reverse_complement()
 
     def __repr__(self):
-        return repr(str(self.strain) + " " + str(self.name))
+        return self.gene_id
 
     def get_record(self,descriptor = None):
-        desc = str(self.strain) + '_' + str(descriptor)
-        return SeqRecord.SeqRecord(str(self), id = self.gene_id, description = desc)
+        desc = str(self.strain) + '_' + str(self.name)
+        return SeqRecord.SeqRecord(Seq.Seq(), id = desc, description = desc)
 
     def reverse_complement(self):
         if not self.complemented and self.strand == '-':
@@ -422,7 +393,7 @@ class Variants(object):
         if strain not in self.strains:
             raise ValueError("strain not in Variants")
         else:
-            print(strain)
+
             if chromosome:
                 return self._snps_by_strain[strain][chromosome]
             else:
@@ -532,117 +503,6 @@ class Coordinate(object):
             self._pos = int(self._pos)
         return self._pos
 
-class Alignment(object):
-    pass
-
-class Trimmed(object):
-    '''may be unnecessary'''
-    pass
-
-class PolyDiv(object):
-    '''accepts massprf_preprocess output, accepts scaling, returns a reinstantiation descendant that cannot scale'''
-    def __init__(self, file, genename, grouping):
-        if isinstance(file, str):
-            file = Path(file)
-                
-        try:
-            if not file.is_file():
-                raise IOError("Invalid file passed to PolyDiv class")
-            with file.open("r") as f:
-                self.contents = [line for line in f.read().splitlines() if line]
-                if "Can't" in contents[0]:
-                    raise AttributeError("Error due to silent clustering")
-                if "Error" in contents[0]:
-                    raise AttributeError("Error in MASSPRF_preprocess input parameters")
-                if "MAC-PRF" not in contents[0]:
-                    raise IOError("Not a MASSPRF file")
-                if "Mission accomplished" not in contents[-1]:
-                    raise AttributeError("File did not pass preprocessing")
-        except Exception as exception:
-            LOGGER.error("%s Polymorphism/Divergence import failed" % genename, exc_info=True)
-        else:
-            self.genename = genename
-            self.grouping = grouping
-            self._ogpol = next(filter(lambda s: s.startswith('Polymorphism:'),lines)).split()[1]
-            self._ogdiv = next(filter(lambda s: s.startswith('Divergence:'),lines)).split()[1]
-            self._polymorphism = self._ogpol
-            self._divergence = self._ogdiv
-            self._scale_factor = None
-            self.__divscaled, self.__polyscaled = False, False
-            
-            LOGGER.info("%s Polymorphism/Divergence file initialized with %s scale factor" % (self.genename, self.scale_factor))
-
-
-    def __len__(self):
-        if not self.scaled:
-            return len(self._ogpol)
-        else:
-            return len(self.polymorphism)
-
-    @property
-    def scaled(self):
-        return all((self.__divscaled, self.__polyscaled))
-
-    @property
-    def scale_factor(self):
-        l = len(self)
-        if self._scale_factor is None:
-            try:
-                if l <= 600:
-                    self._scale_factor = 1
-                elif l > 600 and l <=1800:
-                    self._scale_factor = 3
-                elif l > 1800 and l <= 3600:
-                    self._scale_factor = 6
-                elif l > 3600 and l <= 5400:
-                    self._scale_factor = 9
-                elif l > 5400 and l <= 7200:
-                    self._scale_factor = 12
-                elif l > 7200 and l <= 9000:
-                    self._scale_factor = 15
-                elif l > 9000 and l <= 10800:
-                    self._scale_factor = 18
-                elif l > 10800 and l <= 12600:
-                    self._scale_factor = 21
-                elif l > 12600 and l <= 14400:
-                    self._scale_factor = 24
-                elif l > 14400 and l <= 16200:
-                    self._scale_factor = 27
-                elif l > 16200 and l <= 18000:
-                    self._scale_factor = 30
-                elif l > 18000 and l <= 30000:
-                    self._scale_factor = 50
-                elif l > 30000 and l <= 70000:
-                    self._scale_factor = 117
-                else:
-                    raise ValueError("Poly/Div sequence too long, %s" % len(self))
-            except ValueError:
-                LOGGER.error("%s scaling returned invalid scale factor" % (self.genename), exc_info = True)
-        return self._scale_factor
-
-    @property
-    def polymorphism(self):
-        if not self.scaled:
-            if self._scale_factor is 1:
-                self.__polyscaled = True
-                self._polymorphism = self._ogpol
-            else:
-                self._polymorphism = Scaler()
-                self.__polyscaled = True
-        return self._polymorphism
-
-    @property
-    def divergence(self):
-        if not self.scaled:
-            if self._scale_factor is 1:
-                self.__divscaled = True
-                self._divergence = self._ogdiv
-            else:
-                self._divergence = Scaler(divergence)
-                self.__divscaled = True
-        return self._divergence
-
-
 '''adaptor builders'''
 
 class CDSAdaptorBuilder(object):
@@ -695,13 +555,8 @@ class HomologAdaptorBuilder(object):
 '''adaptors'''
 
 class GffUtilAdaptor(object):
-    '''to do:
-    Document this class
-
-    1) fix **kwargs checking to account for all scenarios - consider using paper logic diagram first
-        - document logic as right now it is a bit obtuse
-    2) fix createGene to initalize Gene classes
-    3) integrate with Genome?
+    ''' This class will build a gff util db if one is not passed to it.
+    once that check has been performed, it yields annotations
     '''
     def __init__(self, **kwargs):
         if not kwargs:
@@ -744,7 +599,7 @@ class GffUtilAdaptor(object):
 ## if the range on the GFF is 1-10, then the python string indices will be 0-9.  Therefore, str[0:10].  Check this to make sure it is right.
 class PyVCFAdaptor(object):
     '''adapts VCF files into Variants class of Variant leafs
-    skips all non-snps for now.  Fix!'''
+    skips all non-snps for now. '''
     def __new__(self, variants):
         if not Path(variants).is_file():
             raise IOError("Invalid filename supplied for VCF")
@@ -776,7 +631,6 @@ class FastaGenomeAdaptor(object):
     '''FastaGenomeAdaptor adapts biopython SeqIO genome into the genome class
     "species" here is a generic term, eg rice, banana, etc, that is useful for bluntly differentiating objects of type genome
 
-    Consider reworking the external representation of reference genome and its variants
     '''
     def __new__(self, reference, species, variants = None):
         #GenomeAdaptorBuilder already did the type checking of reference to insure it is a filetype
@@ -801,8 +655,7 @@ class FastaGenomeAdaptor(object):
                     referenceGenome.addStrain(VariantGenome(referenceGenome, strain, variants.of_strain(strain)))
 
         return referenceGenome
-        #if variants are passed, we are going to build a bunch of new genome objects
-        #the genomes should build & insert their variants themselves. 
+
 
 class CSVHomologs(object):
     def __init__(self, homologyfile, name):
@@ -828,60 +681,58 @@ class CSVbHomologs(CSVHomologs):
             homologymap.addToGroup(column,[name + '_'+ strain for strain in self.csv_df[column][pd.notnull(self.csv_df[column])]])
         return homologymap
 
-''' begin algorithm objects '''
-'''these should all inherit the ability to spawn subprocesses and maybe do file writing'''
-
 class SeqRecordPairing(object):
-    def __init__(self, inseqs, outdir):
-        self.ingroup1 = inseqs[0]
-        self.ingroup2 = inseqs[1]
-        self.name = self.ingroup1.id
-        self.out_group1, self.outgroup2 = []
-        self.group1_descriptions = list(map(lambda ele: ele.description, self.group1))
-        self.group2_description = list(map(lambda ele: ele.description, self.group2))
-        self.unnested_inputgroups = [ele for ele in itertools.chain(self.ingroup1, self.ingroup2)]
-        self.fileouts = [outdir.joinpath("GROUP1_%s" % self.name), outdir.joinpath("GROUP1_%s" % self.name)]
+    '''this class is used to manage grouped collections of sequences between collation, alignment, and trimming'''
+    def __init__(self, name, inseqs):
+        self.group1 = inseqs[0]
+        self.group2 = inseqs[1]
+        self.name = name
+        self.group1_identifiers = [ele.id for ele in self.group1]
+        self.group2_identifiers = [ele.id for ele in self.group2]
+        
 
-    def map_out_groups(self, out_groups):
-        self.out_group1 = [ele for ele in out_groups if ele.description in self.ingroup1_descriptions]
-        self.out_group2 = [ele for ele in out_groups if ele.description in self.ingroup2_descriptions]
-        self.out_groups = [self.out_group1, self.out_group2]
+    def edit_groups(self, edited_groups):
+        self.group1 = [ele for ele in edited_groups if ele.id in self.group1_identifiers]
+        self.group2= [ele for ele in edited_groups if ele.id in self.group2_identifiers]
 
-    def write(self):
-        for out, file in zip(self.out_groups, self.fileouts):
+    @property
+    def unnested_groups(self):
+        return [ele for ele in itertools.chain(self.group1, self.group2)]
+
+    def write(self,outdir,txt_to_append=''):
+        fileouts = [outdir.joinpath("GROUP1_%s_%s.txt" % (self.name, txt_to_append)), outdir.joinpath("GROUP2_%s_%s.txt" % (self.name, txt_to_append))]
+        for out, file in zip([self.group1, self.group2], fileouts):
             with file.open('w') as writefile:
-                SeqIO.write(group, writefile, "FASTA")
-    
-class Aligner(SeqRecordPairing):
+                SeqIO.write(out, writefile, "fasta")
+        return fileouts
+''' begin algorithm objects '''
+
+class Aligner(object):
     '''Aligner: Requires MUSCLE, Biopython
-    figure out how to manage naming through this pipe
-    given a collection of coding sequences, pass them to MUSCLE and align them.  return them in a form analogous to their native structures
+    given an unnested list of seqrecord, align on a subprocess and return the alignment
     '''
-    def __new__(self, inseqs, outdir):
-        SeqRecordPairing.__init__(self, inseq, outdir)
+    def __new__(self, inseqs):
         muscle_cline = MuscleCommandline(clwstrict=True)   
         self.child = subprocess.Popen(str(muscle_cline), stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.PIPE, universal_newlines = True, shell=True, preexec_fn=os.setsid)
-        SeqIO.write(self.unnested_inputgroups, self.child.stdin, "fasta")
+        SeqIO.write(inseqs, self.child.stdin, "fasta")
         self.child.stdin.close()
         alignment = AlignIO.read(self.child.stdout,"clustal")
-        self.map_out_groups(alignment)
-        self.write()
-        return alignment, self.out_groups, self.fileouts
 
-class Trimmer(SeqRecordPairing):
+        return alignment
+
+class Trimmer(object):
     '''Trimmer:
     Given an alignment, trim all '-' and return sequences in their native structure
     '''
-    def __new__(self, inseqs, outdir):
-        SeqRecordPairing.__init__(self, inseq, outdir)
+    def __new__(self, inseqs):
         inserts = []
         codons = []
-        sequences = self.unnested_inputgroups
+        sequences = inseqs
         # this could probably be converted to np.arrays and use logical indexing to delete gaps for (?) more efficiency
         for index, sequence in enumerate(sequences): # go through each sequence in the alignment
             sequence = str(sequence.seq)
             codons.append([sequence[n:n+3] for n in range (0, len(sequence), 3)])
-            inserts.append([c for c, x in enumerate(codons[i]) if '-' in x])
+            inserts.append([c for c, x in enumerate(codons[index]) if '-' in x])
              # check the sequence for gaps ('-'), append a list of the indices of gaps for each alignment
         inserts=set([item for sublist in inserts for item in sublist]) # iterate through the nested list and condense into a set (removes duplicates)
         inserts = list(inserts) #flip it back to a list for sorting and indexing
@@ -891,185 +742,27 @@ class Trimmer(SeqRecordPairing):
                 del record[z]
 
             codons[i] = ''.join(record)
-            sequences[i].seq=codons[i]
-        self.map_out_groups(self.unnested_inputgroups)
-        self.write()
-        return alignment, self.out_groups, self.fileouts
+            sequences[i].seq=Seq.Seq(codons[i])
+            
+        return sequences        
 
-class MASSPRF_Pre(object):
-    '''MASSPRF_Pre:
-    Given aligned & trimmed sequences, spawn a MASSPRF subprocess to preprocess them w/ annotation of polymorphism sites
-    '''
-    __masprf_pre_command = "MASSPRF_preprocess"
-    def __new__(self, genename, polymorphism, divergence, outdir, lookupdir):
-        self.polymorphism_path = str(polymorphism.resolve())
-        self.divergence_path = str(divergence.resolve())
-        self.outpath = outdir.joinpath(genename + "_macprfpre.txt")
-        self.outpath = str(self.outpath.resolve())
-        self.lookupdir = str(Path(lookupdir).resolve()) # points to where the lookup tables are kept; this is required by massprf
-        self.outcommand = "source ~/.bash_rc; cd %s; MASSPRF_preprocess -p %s -d %s -o 1 -ci_m 1 -s 1 -t 1 > %s" % (self.lookupdir, self.polymorphism_path, self.divergence_path, self.outpath)
-        self.child = subprocess.call(self.outcommand, shell=True)
-
-        return self.outpath
-
-class Scaler(object):
-    '''Scaler:
-    Given a MASSPRF_preprocess output file, scale the preprocessed genes to a computationally-friendly length
-    '''
-    def __new__(self, ref_seq, scale_factor, name):
-        self.ref_seq = ref_seq
-        self.scale_factor  = scale_factor
-        if self.scale_factor is 1:
-            return self.ref_seq
-        else:
-            words = self.ref_seq[::self.scale_factor]
-            replacement = [any(char in "R" for char in element) for element in words]
-            synonymous = [any(char in "S" for char in element) for element in words]
-            output = ['*'] * len(replacement)
-            for index, value in enumerate(synonymous):
-                if value:
-                    output[index] = 'S'
-            for index, value in enumerate(replacement):
-                if value:
-                    if output[index] is 'S':
-                        LOGGER.warning('%s scaled with %s, but %s position of new string contained synonymous and replacement' % (name, scale_factor, index))
-                    output[index] = 'R'
-            return output
-
-
-class MASSPRF_Queuer(object):
-    '''MASSPRF_Queuer:
-    Given a list of preprocessed & scaled MASSPRF output files, export a text file with corresponding MASSPRF commands for queueing system
-    '''
-    pass
-    
 class DirectoryTree(object):
-    """docstring for DirectoryTree"""
+    """builds an ouput directory tree"""
     __tree_dict = {"genomedir": "genomes", 
                     "pre_align": "pre_alignment", 
                     "alignments": "alignments",
                     "trimmed": "trimmed",
-                    "prf_pre": "prf_preprocess",
-                    "scaled": "scaled",
                     "csv": "csv"}
     def __init__(self, rootdir):
-        try:
-            self._rootdir = Path(rootdir)
-            if not self._rootdir.is_dir():
-                raise IOError("Invalid root directory supplied")
-        except:
-            self._rootdir.mkdir()
-        try:
-            self.logpath = self._rootdir.joinpath(str("massprf_pipeline_log.txt"))
-            self.logpath.touch()
-        except:
-            default_logpath = Path.cwd().joinpath("log.txt")
-            self.logpath = default_logpath
-        finally:
-            logging.basicConfig(filename=str(self.logpath),
-                            filemode='a',
-                            format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
-                            datefmt='%H:%M:%S',
-                            level=logging.DEBUG)
-        LOGGER.info("%s initialized as logpath" % self.logpath)
-        try:
-            self.outdir = self.mksubdir(self._rootdir, "out")
-        except:
-            LOGGER.error("%s directory failed to be created, defaulting to root" % self.outdir, exc_info=True)
-        else: 
-            LOGGER.info("%s output directory initialized" % self.outdir)
+        
+        self._rootdir = Path(rootdir)
+        self.outdir = self.mksubdir(self._rootdir, "out")
         for variable, human_readable in self.__tree_dict.items():
-            try:
-                setattr(self, variable, self.mksubdir(self.outdir,human_readable))   
-            except:
-                LOGGER.error("%s failed to initialize as %s, defaulting output to root" (variable, human_readable), exc_info=True)
-                setattr(self, variable, self._rootdir)    
-            else:
-                LOGGER.info(variable + "set to %s" % getattr(self, variable))
+            setattr(self, variable, self.mksubdir(self.outdir,human_readable))   
+
 
     def mksubdir(self, root, directory):
         directory = root.joinpath(str(directory))
         if not directory.is_dir():
             directory.mkdir()
         return directory
-
-class Program(object):
-    """docstring for program"""
-    def __init__(self, 
-                genomes, 
-                homologymap,
-                species, 
-                annotations = None, 
-                annotationsdb = None, 
-                rootdir = '.', 
-                variants = None, 
-                ignore_small_sample = False):
-        if not Path(genomes).is_file():
-            raise AttributeError("No genomes supplied for input")
-        if not Path(homologymap).is_file():
-            raise AttributeError("No homology map supplied for polymorphism-divergence mapping")
-        if not annotations and not annotationsdb:
-            raise AttributeError("No annotationsdb supplied and no annotations map for import")
-        if not variants and len(genomes) <= 2 and not ignore_small_sample:
-            raise AttributeError("<= 2 genomes supplied and no variants to build, massprf analysis is incomplete")
-        self.directories = DirectoryTree(str(rootdir))
-        
-        if variants:
-            self.variants = VariantsAdaptorBuilder(str(variants))
-        else:
-            self.variants = None
-        self.homologymap = HomologAdaptorBuilder(str(homologymap),species)
-        self.genomes = GenomeAdaptorBuilder(str(genomes),str(species), variants = self.variants)
-
-        self.homologymap.buildMapToGenomes(self.genomes)
-
-
-        annotationsargs = {key:value for key,value in {'db':annotationsdb,'gff3':annotations}.items() if value}
-        self.annotations = CDSAdaptorBuilder('gff3', **annotationsargs)
-
-    def export_genomes(self):
-        pass
-        #self.genomes.export(self.directories.genomedir)
-    def build_genes(self):
-        for gene in self.annotations.getGenes(self.homologymap.homologs):
-            cds = self.annotations.createCodingAnnotation(gene, self.genomes)
-            grouping = []
-            for group in self.homologymap.group_list:
-                outbuffer = []
-                for genome in self.homologymap.group_genome_dict[group]:
-                    outbuffer.append(genome.genes_map[cds.name].getSequence(genome).get_record(group))
-                grouping.append(outbuffer)
-
-
-def test():
-    #tree = DirectoryTree('.')
-    #variants = VariantsAdaptorBuilder("../ricemassprf/mass_rice")
-    #genomes = GenomeAdaptorBuilder("../ricemassprf/referencegenome_12chro.fa", "rice", variants = variants)
-    #genomes.export()
-    #return genomes
-    '''annotation_args = {'db':'../ricemassprf/ricefeatureDB'}
-    annotations = CDSAdaptorBuilder('gff3',**annotation_args)
-    target_genes = ['OS05T0522500-01']
-    gene = annotations.getGenes(target_genes)
-    output_annotation = []
-    output_sequences = []
-    for c in gene:
-        output_annotation.append(annotations.createCodingAnnotation(c, genomes))
-    for g in output_annotation:
-        output_sequences.append(g.getSequence(genomes.name))
-
-    return genomes, output_annotation, output_sequences'''
-
-
-'''skeleton code for chromosome tester'''
-'''
-genome = main.test()
-refchr = genome.get_chromosome(3)
-var = genome[1]
-varchr = var.get_chromosome(3)
-refchr != varchr
-'''
-'''command line
-if __name__ == '__main__':
-    parser = ArgumentParser(description = "Pipeline for processing genome data for downstream MASSPRF analysis")
-    parser.add_argument('-dir', dest = 'rootdir', )'''
