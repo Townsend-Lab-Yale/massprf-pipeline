@@ -83,4 +83,4 @@ pyvcf:
 
 # Usage:
 
-To run, type python massprf-pipeline.py <cli>
+To run example, see jobs.list
