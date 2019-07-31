@@ -3,7 +3,7 @@ pipeline for genome wide MASSPRF analysis
 
 ## Installation
 Note: These instructions are by no means exhaustive and will change based on your individual shell configurations and environment.  In general, this instruction (and the pipeline itself) assumes a unix environment running bash.  Advanced users w/ different configurations should be able to install without these instructions.
-#### 0) Install massprf and massprf_preprocess.  You can clone this repository and read within for build instructions. https://github.com/zimingz/MASSPRF_10July2016
+#### 0) Install massprf and massprf_preprocess.  You can clone this repository and read within for build instructions. https://github.com/Townsend-Lab-Yale/MASSPRF
 
 It is important to note that you may need to build both massprf and massprf_preprocess independently.  The final executable for massprf will be in ./bin, while the massprf_preprocess executable will be in ./MASSPRF_preprocessing_08July2016.
 
