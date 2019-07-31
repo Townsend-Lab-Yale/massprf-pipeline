@@ -72,7 +72,7 @@ def build_genes_parallel(inputs):
     grouping = pipeline.SeqRecordPairing(cds.name, grouping) #init a pairing so we can keep track of the genes and write them
     print(cds.name, ' generated \n')
     pre_alignedfiles = grouping.write(directories.pre_align, 'pre_alignment') #write the pre aligned genes
-    alignment = piepline.Aligner(grouping.unnested_groups) #build an alignment
+    alignment = pipeline.Aligner(grouping.unnested_groups) #build an alignment
     print(cds.name, ' aligned \n')
     grouping.edit_groups(alignment) #sync the alignment back into its groupings
     alignedfiles = grouping.write(directories.alignments, 'aligned') #write the grouped alignments
